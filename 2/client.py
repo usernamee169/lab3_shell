@@ -2,41 +2,65 @@
 import socket
 import sys
 
-def main():
-    if len(sys.argv) != 3:
-        print("Использование: python client.py хост порт")
-        return
+class MessageClient:
+    def __init__(self, host='127.0.0.1', port=8888):
+        self.host = host
+        self.port = port
+        self.socket = None
     
-    host = sys.argv[1]
-    port = int(sys.argv[2])
+    def connect(self):
+        """Подключение к серверу"""
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.host, self.port))
+            print("Подключение к серверу установлено")
+            
+            # Получаем приветственное сообщение
+            data = self.socket.recv(1024).decode()
+            print(data, end='')
+            
+            self.interactive_mode()
+            
+        except ConnectionRefusedError:
+            print("Не удалось подключиться к серверу")
+        except Exception as e:
+            print(f"Ошибка: {e}")
+        finally:
+            if self.socket:
+                self.socket.close()
     
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
-    try:
-        sock.connect((host, port))
-        
-        # Получаем приветствие
-        print(sock.recv(1024).decode(), end='')
+    def interactive_mode(self):
+        """Интерактивный режим работы с сервером"""
+        buffer = ""
         
         while True:
-            # Показываем ответ сервера
+            # Ждем данные от сервера (включая приглашение)
             try:
-                data = sock.recv(1024).decode()
+                data = self.socket.recv(1024).decode()
                 if not data:
                     break
-                print(data, end='')
                 
-                # Если сервер ждет ввод (символ > или :)
-                if data.endswith('> ') or ':' in data or '\n' not in data:
-                    user_input = input()
-                    sock.send((user_input + "\n").encode())
-            except:
+                buffer += data
+                
+                # Если в буфере есть полная строка с приглашением, показываем ее
+                if '>' in buffer or '\n' in buffer:
+                    print(buffer, end='')
+                    
+                    # Если это приглашение для ввода (заканчивается на '>')
+                    if buffer.strip().endswith('>'):
+                        # Получаем ввод от пользователя
+                        user_input = input()
+                        self.socket.sendall((user_input + '\n').encode())
+                    
+                    buffer = ""
+            
+            except KeyboardInterrupt:
+                print("\nОтключение от сервера...")
                 break
-                
-    except ConnectionRefusedError:
-        print("Не удалось подключиться к серверу")
-    finally:
-        sock.close()
+            except Exception as e:
+                print(f"Ошибка: {e}")
+                break
 
 if __name__ == "__main__":
-    main()
+    client = MessageClient()
+    client.connect()
