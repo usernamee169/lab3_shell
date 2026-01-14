@@ -1,187 +1,235 @@
 #!/usr/bin/env python3
 import socket
-import os
 import threading
+import os
+import hashlib
 
-class SimpleMessageServer:
-    def __init__(self, port=8888):
+class MessageServer:
+    def __init__(self, host='0.0.0.0', port=8888):
+        self.host = host
         self.port = port
-        self.users = {}
-        self.load_users()
-    
-    def load_users(self):
-        """Загрузка пользователей из файла pass"""
-        if os.path.exists("pass"):
-            with open("pass", "r") as f:
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SOCK_REUSEADDR, 1)
+        self.clients = {}
+        self.load_passwords()
+        
+    def load_passwords(self):
+        """Загрузка паролей из файла pass"""
+        self.passwords = {}
+        if os.path.exists('pass'):
+            with open('pass', 'r') as f:
                 for line in f:
-                    if line.strip() and " " in line:
-                        user, pwd = line.strip().split(" ", 1)
-                        self.users[user] = pwd
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            user = parts[0]
+                            pass_hash = parts[1]
+                            self.passwords[user] = pass_hash
     
-    def save_user(self, user, pwd):
-        """Сохранение нового пользователя"""
-        with open("pass", "a") as f:
-            f.write(f"{user} {pwd}\n")
-        self.users[user] = pwd
+    def authenticate(self, username, password):
+        """Аутентификация пользователя"""
+        if username in self.passwords:
+            # Простая проверка - в реальной системе используйте безопасное хеширование
+            return self.passwords[username] == hashlib.md5(password.encode()).hexdigest()
+        return False
     
-    def check_auth(self, user, pwd):
-        """Проверка авторизации"""
-        return user in self.users and self.users[user] == pwd
+    def get_user_messages_dir(self, username):
+        """Получение пути к каталогу сообщений пользователя"""
+        dir_path = f"messages/{username}"
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+        return dir_path
     
-    def handle_client(self, conn, addr):
-        """Обработка одного клиента"""
-        print(f"Новое подключение: {addr}")
-        user = None
+    def list_messages(self, username):
+        """Получение списка сообщений пользователя"""
+        messages = []
+        messages_dir = self.get_user_messages_dir(username)
         
-        conn.send(b"Сервер сообщений. Команда: help\n")
-        
-        while True:
-            conn.send(b"> ")
-            data = conn.recv(1024).decode().strip()
-            if not data:
-                break
-            
-            parts = data.split()
-            if not parts:
-                continue
-            
-            cmd = parts[0].lower()
-            
-            # Команда help
-            if cmd == "help":
-                help_msg = """
-Доступные команды:
-auth user pass - Авторизация
-list - Список сообщений
-read N - Прочитать сообщение N
-send user - Отправить сообщение
-exit - Выход
-help - Справка
-"""
-                conn.send(help_msg.encode())
-            
-            # Команда auth
-            elif cmd == "auth":
-                if len(parts) == 3:
-                    user, pwd = parts[1], parts[2]
-                    if self.check_auth(user, pwd):
-                        conn.send(b"OK\n")
-                        # Создаем директорию для сообщений
-                        os.makedirs(f"messages/{user}", exist_ok=True)
-                    else:
-                        conn.send(b"ERROR: Неверный логин/пароль\n")
-                        user = None
-                else:
-                    conn.send(b"ERROR: Используйте auth user pass\n")
-            
-            # Команда exit
-            elif cmd == "exit":
-                conn.send(b"До свидания\n")
-                break
-            
-            # Проверка авторизации для остальных команд
-            elif not user:
-                conn.send(b"ERROR: Сначала авторизуйтесь\n")
-            
-            # Команда list
-            elif cmd == "list":
-                files = os.listdir(f"messages/{user}")
-                msgs = []
-                for f in files:
-                    if f.endswith(".txt"):
-                        try:
-                            num = int(f[:-4])
-                            with open(f"messages/{user}/{f}", "r") as msg_file:
-                                subject = msg_file.readline().strip()
-                            msgs.append((num, subject))
-                        except:
-                            continue
-                
-                msgs.sort()
-                if msgs:
-                    response = "\n".join([f"{num}: {subj}" for num, subj in msgs])
-                    conn.send((response + "\n").encode())
-                else:
-                    conn.send(b"Нет сообщений\n")
-            
-            # Команда read
-            elif cmd == "read" and len(parts) == 2:
+        for filename in os.listdir(messages_dir):
+            if filename.endswith('.msg'):
+                msg_num = filename[:-4]
+                filepath = os.path.join(messages_dir, filename)
                 try:
-                    num = parts[1]
-                    with open(f"messages/{user}/{num}.txt", "r") as f:
-                        content = f.read()
-                    conn.send((content + "\n").encode())
+                    with open(filepath, 'r') as f:
+                        subject = f.readline().strip()
+                    messages.append((msg_num, subject))
                 except:
-                    conn.send(b"ERROR: Сообщение не найдено\n")
-            
-            # Команда send
-            elif cmd == "send" and len(parts) == 2:
-                to_user = parts[1]
-                if to_user not in self.users:
-                    conn.send(f"ERROR: Пользователь {to_user} не найден\n".encode())
-                    continue
-                
-                conn.send(b"Тема: ")
-                subject = conn.recv(1024).decode().strip()
-                
-                conn.send(b"Текст (окончание - точка на новой строке):\n")
-                
-                lines = []
-                while True:
-                    line = conn.recv(1024).decode().strip()
-                    if line == ".":
-                        break
-                    lines.append(line)
-                
-                # Находим следующий номер
-                os.makedirs(f"messages/{to_user}", exist_ok=True)
-                files = os.listdir(f"messages/{to_user}")
-                nums = [int(f[:-4]) for f in files if f.endswith(".txt")]
-                next_num = max(nums) + 1 if nums else 1
-                
-                # Сохраняем сообщение
-                with open(f"messages/{to_user}/{next_num}.txt", "w") as f:
-                    f.write(subject + "\n")
-                    f.write(f"От: {user}\n")
-                    f.write("\n" + "\n".join(lines) + "\n")
-                
-                conn.send(f"Сообщение #{next_num} отправлено\n".encode())
-            
-            else:
-                conn.send(b"ERROR: Неизвестная команда\n")
+                    pass
         
-        conn.close()
-        print(f"Отключение: {addr}")
+        return messages
+    
+    def read_message(self, username, msg_num):
+        """Чтение конкретного сообщения"""
+        messages_dir = self.get_user_messages_dir(username)
+        filepath = os.path.join(messages_dir, f"{msg_num}.msg")
+        
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    content = f.read()
+                return content
+            except:
+                return "Ошибка чтения сообщения"
+        else:
+            return "Сообщение не найдено"
+    
+    def send_message(self, from_user, to_user, subject, body):
+        """Отправка сообщения пользователю"""
+        # Проверяем, существует ли пользователь
+        if to_user not in self.passwords:
+            return False, f"Пользователь {to_user} не существует"
+        
+        # Получаем следующий номер сообщения для получателя
+        messages_dir = self.get_user_messages_dir(to_user)
+        existing_msgs = [f for f in os.listdir(messages_dir) if f.endswith('.msg')]
+        
+        if existing_msgs:
+            msg_nums = [int(f[:-4]) for f in existing_msgs if f[:-4].isdigit()]
+            next_num = max(msg_nums) + 1 if msg_nums else 1
+        else:
+            next_num = 1
+        
+        # Формируем полное сообщение
+        full_message = f"От: {from_user}\nТема: {subject}\n\n{body}"
+        
+        # Сохраняем сообщение
+        filepath = os.path.join(messages_dir, f"{next_num}.msg")
+        try:
+            with open(filepath, 'w') as f:
+                f.write(full_message)
+            return True, f"Сообщение отправлено {to_user}, номер: {next_num}"
+        except Exception as e:
+            return False, f"Ошибка отправки: {str(e)}"
+    
+    def handle_client(self, client_socket, address):
+        """Обработка клиентского соединения"""
+        print(f"[+] Подключен клиент {address}")
+        current_user = None
+        
+        try:
+            client_socket.sendall(b"Добро пожаловать в систему сообщений!\n")
+            client_socket.sendall(b"Для справки введите help\n")
+            
+            while True:
+                # Отправляем приглашение для ввода
+                if current_user:
+                    prompt = f"{current_user}> "
+                else:
+                    prompt = "> "
+                
+                client_socket.sendall(prompt.encode())
+                
+                # Получаем команду
+                data = client_socket.recv(1024).decode().strip()
+                if not data:
+                    break
+                
+                parts = data.split()
+                command = parts[0].lower() if parts else ""
+                
+                # Обработка команд
+                if command == "auth" and len(parts) == 3:
+                    username = parts[1]
+                    password = parts[2]
+                    
+                    if self.authenticate(username, password):
+                        current_user = username
+                        response = f"Успешная авторизация как {username}\n"
+                    else:
+                        response = "Ошибка авторизации. Неверное имя пользователя или пароль\n"
+                
+                elif command == "list":
+                    if not current_user:
+                        response = "Сначала выполните авторизацию (auth user pass)\n"
+                    else:
+                        messages = self.list_messages(current_user)
+                        if messages:
+                            response = "Ваши сообщения:\n"
+                            for msg_num, subject in messages:
+                                response += f"  {msg_num}: {subject}\n"
+                        else:
+                            response = "Сообщений нет\n"
+                
+                elif command == "read" and len(parts) == 2:
+                    if not current_user:
+                        response = "Сначала выполните авторизацию (auth user pass)\n"
+                    else:
+                        msg_num = parts[1]
+                        message_content = self.read_message(current_user, msg_num)
+                        response = message_content + "\n"
+                
+                elif command == "send" and len(parts) == 2:
+                    if not current_user:
+                        response = "Сначала выполните авторизацию (auth user pass)\n"
+                    else:
+                        to_user = parts[1]
+                        client_socket.sendall(b"Введите тему сообщения: ")
+                        subject = client_socket.recv(1024).decode().strip()
+                        
+                        client_socket.sendall(b"Введите текст сообщения (завершите точкой на отдельной строке):\n")
+                        body_lines = []
+                        while True:
+                            line = client_socket.recv(1024).decode()
+                            if line.strip() == ".":
+                                break
+                            body_lines.append(line)
+                        
+                        body = "".join(body_lines)
+                        success, result = self.send_message(current_user, to_user, subject, body)
+                        response = result + "\n"
+                
+                elif command == "exit":
+                    response = "До свидания!\n"
+                    client_socket.sendall(response.encode())
+                    break
+                
+                elif command == "help":
+                    response = """Доступные команды:
+  auth <user> <pass> - авторизация
+  list - показать список сообщений
+  read <msg_num> - прочитать сообщение
+  send <user> - отправить сообщение пользователю
+  exit - выход
+  help - эта справка\n"""
+                
+                else:
+                    response = f"Неизвестная команда или неверные параметры: {data}\nИспользуйте help для справки\n"
+                
+                client_socket.sendall(response.encode())
+        
+        except ConnectionResetError:
+            print(f"[-] Клиент {address} отключился")
+        except Exception as e:
+            print(f"Ошибка при обработке клиента {address}: {e}")
+        finally:
+            client_socket.close()
+            print(f"[-] Отключен клиент {address}")
     
     def start(self):
         """Запуск сервера"""
-        # Создаем тестового пользователя, если нужно
-        if not os.path.exists("pass"):
-            self.save_user("test", "test123")
-            print("Создан тестовый пользователь: test/test123")
-        
-        # Создаем директорию для сообщений
-        os.makedirs("messages", exist_ok=True)
-        
-        # Запускаем сервер
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind(('0.0.0.0', self.port))
-        server.listen(5)
-        
-        print(f"Сервер запущен на порту {self.port}")
-        print("Ожидание подключений...")
-        
         try:
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(5)
+            print(f"Сервер запущен на {self.host}:{self.port}")
+            print("Ожидание подключений...")
+            
             while True:
-                conn, addr = server.accept()
-                thread = threading.Thread(target=self.handle_client, args=(conn, addr))
-                thread.daemon = True
-                thread.start()
+                client_socket, address = self.server_socket.accept()
+                client_thread = threading.Thread(
+                    target=self.handle_client,
+                    args=(client_socket, address),
+                    daemon=True
+                )
+                client_thread.start()
+                
         except KeyboardInterrupt:
             print("\nСервер остановлен")
+        except Exception as e:
+            print(f"Ошибка сервера: {e}")
         finally:
-            server.close()
+            self.server_socket.close()
 
-# Запуск
 if __name__ == "__main__":
-    SimpleMessageServer(8888).start()
+    server = MessageServer()
+    server.start()
