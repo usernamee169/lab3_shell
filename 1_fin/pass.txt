@@ -1,4 +1,0 @@
-# Формат: username password
-admin 123456
-user1 password1
-test test123
