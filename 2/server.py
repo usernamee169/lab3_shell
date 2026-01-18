@@ -3,7 +3,7 @@ import os
 import threading
 
 # Конфигурация
-HOST = '0.0.0.0'  # Все интерфейсы
+HOST = '0.0.0.0'
 PORT = 8888
 PASS_FILE = 'pass'
 MESSAGES_DIR = 'messages'
@@ -12,23 +12,28 @@ MESSAGES_DIR = 'messages'
 if not os.path.exists(MESSAGES_DIR):
     os.makedirs(MESSAGES_DIR)
 
-# Загрузка пользователей
 def load_users():
+    """Загрузка пользователей из файла"""
     users = {}
     if os.path.exists(PASS_FILE):
-        with open(PASS_FILE, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        users[parts[0]] = parts[1]
+        try:
+            with open(PASS_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            users[parts[0]] = parts[1]
+        except Exception as e:
+            print(f"Ошибка загрузки файла паролей: {e}")
     return users
 
 users = load_users()
-
-# Словарь активных пользователей {сокет: username}
 active_users = {}
+
+def send_utf8(conn, message):
+    """Отправка сообщения в UTF-8"""
+    conn.send(message.encode('utf-8'))
 
 def handle_client(conn, addr):
     print(f"Новое соединение: {addr}")
@@ -37,7 +42,8 @@ def handle_client(conn, addr):
     
     try:
         while True:
-            data = conn.recv(1024).decode().strip()
+            # Получаем данные в UTF-8
+            data = conn.recv(1024).decode('utf-8').strip()
             if not data:
                 break
             
@@ -47,7 +53,7 @@ def handle_client(conn, addr):
             # auth user pass
             if command == "auth":
                 if len(parts) != 3:
-                    conn.send(b"Ошибка: Используйте: auth user pass\n")
+                    send_utf8(conn, "Ошибка: Используйте: auth user pass\n")
                     continue
                 
                 username = parts[1]
@@ -59,35 +65,38 @@ def handle_client(conn, addr):
                     if not os.path.exists(user_dir):
                         os.makedirs(user_dir)
                     active_users[conn] = username
-                    conn.send(b"OK: Авторизация успешна\n")
+                    send_utf8(conn, "OK: Авторизация успешна\n")
                 else:
-                    conn.send(b"Ошибка: Неверный логин или пароль\n")
+                    send_utf8(conn, "Ошибка: Неверный логин или пароль\n")
             
             # list
             elif command == "list":
                 if current_user is None:
-                    conn.send(b"Ошибка: Сначала авторизуйтесь\n")
+                    send_utf8(conn, "Ошибка: Сначала авторизуйтесь\n")
                     continue
                 
                 files = os.listdir(user_dir)
                 if not files:
-                    conn.send(b"Сообщений нет\n")
+                    send_utf8(conn, "Сообщений нет\n")
                 else:
                     result = "Список сообщений:\n"
                     for i, filename in enumerate(sorted(files), 1):
-                        with open(os.path.join(user_dir, filename), 'r', encoding='utf-8') as f:
-                            subject = f.readline().strip()
-                        result += f"{i}. {subject}\n"
-                    conn.send(result.encode())
+                        try:
+                            with open(os.path.join(user_dir, filename), 'r', encoding='utf-8') as f:
+                                subject = f.readline().strip()
+                            result += f"{i}. {subject}\n"
+                        except:
+                            result += f"{i}. Ошибка чтения сообщения\n"
+                    send_utf8(conn, result)
             
             # read msg
             elif command == "read":
                 if current_user is None:
-                    conn.send(b"Ошибка: Сначала авторизуйтесь\n")
+                    send_utf8(conn, "Ошибка: Сначала авторизуйтесь\n")
                     continue
                 
                 if len(parts) != 2:
-                    conn.send(b"Ошибка: Используйте: read номер_сообщения\n")
+                    send_utf8(conn, "Ошибка: Используйте: read номер_сообщения\n")
                     continue
                 
                 try:
@@ -97,34 +106,36 @@ def handle_client(conn, addr):
                         filename = files[msg_num - 1]
                         with open(os.path.join(user_dir, filename), 'r', encoding='utf-8') as f:
                             content = f.read()
-                        conn.send(content.encode())
+                        send_utf8(conn, content)
                     else:
-                        conn.send(f"Ошибка: Сообщение {msg_num} не найдено\n".encode())
+                        send_utf8(conn, f"Ошибка: Сообщение {msg_num} не найдено\n")
                 except ValueError:
-                    conn.send(b"Ошибка: Неверный номер сообщения\n")
+                    send_utf8(conn, "Ошибка: Неверный номер сообщения\n")
+                except Exception as e:
+                    send_utf8(conn, f"Ошибка: {str(e)}\n")
             
             # send user
             elif command == "send":
                 if current_user is None:
-                    conn.send(b"Ошибка: Сначала авторизуйтесь\n")
+                    send_utf8(conn, "Ошибка: Сначала авторизуйтесь\n")
                     continue
                 
                 if len(parts) != 2:
-                    conn.send(b"Ошибка: Используйте: send username\n")
+                    send_utf8(conn, "Ошибка: Используйте: send username\n")
                     continue
                 
                 recipient = parts[1]
                 if recipient not in users:
-                    conn.send(b"Ошибка: Пользователь не существует\n")
+                    send_utf8(conn, "Ошибка: Пользователь не существует\n")
                     continue
                 
-                conn.send(b"Введите тему сообщения:\n")
-                subject = conn.recv(1024).decode().strip()
+                send_utf8(conn, "Введите тему сообщения:\n")
+                subject = conn.recv(1024).decode('utf-8').strip()
                 
-                conn.send(b"Введите текст сообщения (окончание - точка на новой строке):\n")
+                send_utf8(conn, "Введите текст сообщения (окончание - точка на новой строке):\n")
                 message_lines = []
                 while True:
-                    line = conn.recv(1024).decode().strip()
+                    line = conn.recv(1024).decode('utf-8').strip()
                     if line == ".":
                         break
                     message_lines.append(line)
@@ -144,7 +155,7 @@ def handle_client(conn, addr):
                     f.write("\n")
                     f.write("\n".join(message_lines))
                 
-                conn.send(f"OK: Сообщение отправлено {recipient}\n".encode())
+                send_utf8(conn, f"OK: Сообщение отправлено {recipient}\n")
             
             # help
             elif command == "help":
@@ -157,15 +168,15 @@ send user - отправить сообщение пользователю
 exit - выход
 help - эта справка
 """
-                conn.send(help_text.encode())
+                send_utf8(conn, help_text)
             
             # exit
             elif command == "exit":
-                conn.send(b"До свидания!\n")
+                send_utf8(conn, "До свидания!\n")
                 break
             
             else:
-                conn.send(b"Неизвестная команда. Используйте help для справки\n")
+                send_utf8(conn, "Неизвестная команда. Используйте help для справки\n")
     
     except ConnectionError:
         print(f"Соединение с {addr} разорвано")
@@ -178,9 +189,10 @@ help - эта справка
 def main():
     # Создаем файл с пользователями, если его нет
     if not os.path.exists(PASS_FILE):
-        with open(PASS_FILE, 'w') as f:
+        with open(PASS_FILE, 'w', encoding='utf-8') as f:
             f.write("user1 password1\n")
             f.write("user2 password2\n")
+            f.write("админ пароль123\n")  # Русские имена тоже можно
         print(f"Создан файл {PASS_FILE} с тестовыми пользователями")
     
     # Запускаем сервер
