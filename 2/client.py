@@ -1,8 +1,12 @@
 import socket
 import sys
 
-HOST = '127.0.0.1'  # Для тестирования на той же машине
+HOST = '127.0.0.1'
 PORT = 8888
+
+def send_utf8(sock, message):
+    """Отправка сообщения в UTF-8"""
+    sock.send(message.encode('utf-8'))
 
 def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -16,23 +20,27 @@ def main():
                 if not command:
                     continue
                 
-                s.sendall(command.encode())
+                send_utf8(s, command)
                 
                 if command.startswith("send "):
                     # Обработка команды send
-                    print(s.recv(1024).decode(), end='')
-                    subject = input()
-                    s.sendall(subject.encode())
+                    response = s.recv(1024).decode('utf-8')
+                    print(response, end='')
+                    if "Введите тему" in response:
+                        subject = input()
+                        send_utf8(s, subject)
                     
-                    print(s.recv(1024).decode(), end='')
-                    while True:
-                        line = input()
-                        s.sendall(line.encode())
-                        if line == ".":
-                            break
+                    response = s.recv(1024).decode('utf-8')
+                    print(response, end='')
+                    if "Введите текст" in response:
+                        while True:
+                            line = input()
+                            send_utf8(s, line)
+                            if line == ".":
+                                break
                 
                 # Получаем ответ от сервера
-                response = s.recv(4096).decode()
+                response = s.recv(4096).decode('utf-8')
                 print(response, end='')
                 
                 if command == "exit":
