@@ -1,236 +1,213 @@
 import socket
+import os
 import threading
-import math
 
-class AuthSystem:
-    """Простая система аутентификации (для демонстрации)"""
-    def __init__(self):
-        # В реальном приложении храните хэши паролей
-        self.users = {
-            "admin": "admin123",
-            "user": "password123",
-            "test": "test123"
-        }
-        self.active_sessions = {}
-    
-    def login(self, client_id, username, password):
-        """Аутентификация пользователя"""
-        if username in self.users and self.users[username] == password:
-            self.active_sessions[client_id] = username
-            return True
-        return False
-    
-    def is_authenticated(self, client_id):
-        """Проверка аутентификации"""
-        return client_id in self.active_sessions
-    
-    def logout(self, client_id):
-        """Выход из системы"""
-        if client_id in self.active_sessions:
-            del self.active_sessions[client_id]
+# Конфигурация
+HOST = '0.0.0.0'
+PORT = 8888
+PASS_FILE = 'pass'
+MESSAGES_DIR = 'messages'
 
-class QuadraticEquationServer:
-    def __init__(self, host='0.0.0.0', port=8888):
-        self.host = host
-        self.port = port
-        self.auth = AuthSystem()
-        self.client_data = {}  # Хранение коэффициентов для каждого клиента
-        
-    def solve_quadratic(self, a, b, c):
-        """Решение квадратного уравнения ax² + bx + c = 0"""
+# Создаем каталог для сообщений
+if not os.path.exists(MESSAGES_DIR):
+    os.makedirs(MESSAGES_DIR)
+
+def load_users():
+    """Загрузка пользователей из файла"""
+    users = {}
+    if os.path.exists(PASS_FILE):
         try:
-            a = float(a)
-            b = float(b)
-            c = float(c)
-        except ValueError:
-            return "3"  # Синтаксическая ошибка
+            with open(PASS_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            users[parts[0]] = parts[1]
+        except Exception as e:
+            print(f"Ошибка загрузки файла паролей: {e}")
+    return users
+
+users = load_users()
+active_users = {}
+
+def send_utf8(conn, message):
+    """Отправка сообщения в UTF-8"""
+    conn.send(message.encode('utf-8'))
+
+def handle_client(conn, addr):
+    print(f"Новое соединение: {addr}")
+    current_user = None
+    user_dir = None
+    
+    try:
+        while True:
+            # Получаем данные в UTF-8
+            data = conn.recv(1024).decode('utf-8').strip()
+            if not data:
+                break
             
-        # Проверка на ноль
-        if a == 0:
-            if b == 0:
-                if c == 0:
-                    return "0 INF"  # Бесконечное количество решений
+            parts = data.split(maxsplit=2)
+            command = parts[0].lower() if parts else ""
+            
+            # auth user pass
+            if command == "auth":
+                if len(parts) != 3:
+                    send_utf8(conn, "Ошибка: Используйте: auth user pass\n")
+                    continue
+                
+                username = parts[1]
+                password = parts[2]
+                
+                if username in users and users[username] == password:
+                    current_user = username
+                    user_dir = os.path.join(MESSAGES_DIR, username)
+                    if not os.path.exists(user_dir):
+                        os.makedirs(user_dir)
+                    active_users[conn] = username
+                    send_utf8(conn, "OK: Авторизация успешна\n")
                 else:
-                    return "0 NO_ROOTS"  # Нет решений
-            else:
-                x = -c / b
-                return f"0 ONE_ROOT {x}"
-        
-        # Вычисление дискриминанта
-        discriminant = b*b - 4*a*c
-        
-        if discriminant > 0:
-            sqrt_disc = math.sqrt(discriminant)
-            x1 = (-b + sqrt_disc) / (2*a)
-            x2 = (-b - sqrt_disc) / (2*a)
-            return f"0 TWO_ROOTS {x1} {x2}"
-        elif discriminant == 0:
-            x = -b / (2*a)
-            return f"0 ONE_ROOT {x}"
-        else:
-            return "0 NO_REAL_ROOTS"
-    
-    def handle_client(self, client_socket, client_address):
-        """Обработка клиентского соединения"""
-        client_id = f"{client_address[0]}:{client_address[1]}"
-        print(f"[+] Новое подключение: {client_id}")
-        
-        try:
-            while True:
-                # Получение данных от клиента
-                data = client_socket.recv(1024).decode('utf-8').strip()
-                if not data:
-                    break
+                    send_utf8(conn, "Ошибка: Неверный логин или пароль\n")
+            
+            # list
+            elif command == "list":
+                if current_user is None:
+                    send_utf8(conn, "Ошибка: Сначала авторизуйтесь\n")
+                    continue
                 
-                print(f"[{client_id}] Получено: {data}")
-                
-                # Разбор команды
-                parts = data.split()
-                command = parts[0].upper() if parts else ""
-                
-                # Обработка команды LOGIN
-                if command == "LOGIN":
-                    if len(parts) != 3:
-                        response = "3"  # Синтаксическая ошибка
-                    else:
-                        username = parts[1]
-                        password = parts[2]
-                        if self.auth.login(client_id, username, password):
-                            response = "0 LOGIN_SUCCESS"
-                        else:
-                            response = "1"  # Ошибка авторизации
-                
-                # Обработка команды STORE
-                elif command == "STORE":
-                    if not self.auth.is_authenticated(client_id):
-                        response = "1"  # Ошибка авторизации
-                    elif len(parts) != 4:
-                        response = "3"  # Синтаксическая ошибка
-                    else:
+                files = os.listdir(user_dir)
+                if not files:
+                    send_utf8(conn, "Сообщений нет\n")
+                else:
+                    result = "Список сообщений:\n"
+                    for i, filename in enumerate(sorted(files), 1):
                         try:
-                            a, b, c = map(float, parts[1:4])
-                            self.client_data[client_id] = (a, b, c)
-                            response = "0 STORED"
-                        except ValueError:
-                            response = "3"  # Синтаксическая ошибка
-                
-                # Обработка команды SOLVE (с коэффициентами)
-                elif command == "SOLVE":
-                    if not self.auth.is_authenticated(client_id):
-                        response = "1"  # Ошибка авторизации
-                    else:
-                        # Если указаны коэффициенты
-                        if len(parts) == 4:
-                            response = self.solve_quadratic(parts[1], parts[2], parts[3])
-                        # Если коэффициенты не указаны, используем сохраненные
-                        elif len(parts) == 1:
-                            if client_id in self.client_data:
-                                a, b, c = self.client_data[client_id]
-                                response = self.solve_quadratic(a, b, c)
-                            else:
-                                response = "2"  # Коэффициенты не указаны
-                        else:
-                            response = "3"  # Синтаксическая ошибка
-                
-                # Обработка неизвестной команды
-                else:
-                    response = "3"  # Синтаксическая ошибка
-                
-                # Отправка ответа клиенту
-                client_socket.send(response.encode('utf-8'))
-                print(f"[{client_id}] Отправлено: {response}")
-        
-        except Exception as e:
-            print(f"[!] Ошибка с клиентом {client_id}: {e}")
-        finally:
-            # Очистка при отключении
-            self.auth.logout(client_id)
-            if client_id in self.client_data:
-                del self.client_data[client_id]
-            client_socket.close()
-            print(f"[-] Отключение: {client_id}")
-    
-    def start(self):
-        """Запуск сервера"""
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
-        try:
-            server_socket.bind((self.host, self.port))
-            server_socket.listen(5)
-            print(f"[*] Сервер запущен на {self.host}:{self.port}")
-            print("[*] Ожидание подключений...")
+                            with open(os.path.join(user_dir, filename), 'r', encoding='utf-8') as f:
+                                subject = f.readline().strip()
+                            result += f"{i}. {subject}\n"
+                        except:
+                            result += f"{i}. Ошибка чтения сообщения\n"
+                    send_utf8(conn, result)
             
-            while True:
-                client_socket, client_address = server_socket.accept()
-                client_thread = threading.Thread(
-                    target=self.handle_client,
-                    args=(client_socket, client_address)
-                )
-                client_thread.daemon = True
-                client_thread.start()
-        
-        except KeyboardInterrupt:
-            print("\n[*] Остановка сервера...")
-        except Exception as e:
-            print(f"[!] Ошибка сервера: {e}")
-        finally:
-            server_socket.close()
+            # read msg
+            elif command == "read":
+                if current_user is None:
+                    send_utf8(conn, "Ошибка: Сначала авторизуйтесь\n")
+                    continue
+                
+                if len(parts) != 2:
+                    send_utf8(conn, "Ошибка: Используйте: read номер_сообщения\n")
+                    continue
+                
+                try:
+                    msg_num = int(parts[1])
+                    files = sorted(os.listdir(user_dir))
+                    if 1 <= msg_num <= len(files):
+                        filename = files[msg_num - 1]
+                        with open(os.path.join(user_dir, filename), 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        send_utf8(conn, content)
+                    else:
+                        send_utf8(conn, f"Ошибка: Сообщение {msg_num} не найдено\n")
+                except ValueError:
+                    send_utf8(conn, "Ошибка: Неверный номер сообщения\n")
+                except Exception as e:
+                    send_utf8(conn, f"Ошибка: {str(e)}\n")
+            
+            # send user
+            elif command == "send":
+                if current_user is None:
+                    send_utf8(conn, "Ошибка: Сначала авторизуйтесь\n")
+                    continue
+                
+                if len(parts) != 2:
+                    send_utf8(conn, "Ошибка: Используйте: send username\n")
+                    continue
+                
+                recipient = parts[1]
+                if recipient not in users:
+                    send_utf8(conn, "Ошибка: Пользователь не существует\n")
+                    continue
+                
+                send_utf8(conn, "Введите тему сообщения:\n")
+                subject = conn.recv(1024).decode('utf-8').strip()
+                
+                send_utf8(conn, "Введите текст сообщения (окончание - точка на новой строке):\n")
+                message_lines = []
+                while True:
+                    line = conn.recv(1024).decode('utf-8').strip()
+                    if line == ".":
+                        break
+                    message_lines.append(line)
+                
+                # Сохраняем сообщение
+                recipient_dir = os.path.join(MESSAGES_DIR, recipient)
+                if not os.path.exists(recipient_dir):
+                    os.makedirs(recipient_dir)
+                
+                # Генерируем имя файла
+                existing = len(os.listdir(recipient_dir))
+                filename = f"msg_{existing + 1}.txt"
+                
+                with open(os.path.join(recipient_dir, filename), 'w', encoding='utf-8') as f:
+                    f.write(f"Тема: {subject}\n")
+                    f.write(f"От: {current_user}\n")
+                    f.write("\n")
+                    f.write("\n".join(message_lines))
+                
+                send_utf8(conn, f"OK: Сообщение отправлено {recipient}\n")
+            
+            # help
+            elif command == "help":
+                help_text = """
+Доступные команды:
+auth user pass - авторизация
+list - показать список сообщений
+read номер - прочитать сообщение по номеру
+send user - отправить сообщение пользователю
+exit - выход
+help - эта справка
+"""
+                send_utf8(conn, help_text)
+            
+            # exit
+            elif command == "exit":
+                send_utf8(conn, "До свидания!\n")
+                break
+            
+            else:
+                send_utf8(conn, "Неизвестная команда. Используйте help для справки\n")
+    
+    except ConnectionError:
+        print(f"Соединение с {addr} разорвано")
+    finally:
+        if conn in active_users:
+            del active_users[conn]
+        conn.close()
+        print(f"Соединение с {addr} закрыто")
 
-# Простой клиент для тестирования
-class TestClient:
-    def __init__(self, host='127.0.0.1', port=8888):
-        self.host = host
-        self.port = port
+def main():
+    # Создаем файл с пользователями, если его нет
+    if not os.path.exists(PASS_FILE):
+        with open(PASS_FILE, 'w', encoding='utf-8') as f:
+            f.write("user1 password1\n")
+            f.write("user2 password2\n")
+            f.write("админ пароль123\n")  # Русские имена тоже можно
+        print(f"Создан файл {PASS_FILE} с тестовыми пользователями")
     
-    def send_command(self, command):
-        """Отправка команды на сервер"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((self.host, self.port))
-            sock.send(command.encode('utf-8'))
-            response = sock.recv(1024).decode('utf-8')
-            sock.close()
-            return response
-        except Exception as e:
-            return f"Ошибка: {e}"
-    
-    def run_test(self):
-        """Запуск тестовых команд"""
-        print("=== Тестирование сервера ===")
+    # Запускаем сервер
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((HOST, PORT))
+        s.listen()
+        print(f"Сервер запущен на {HOST}:{PORT}")
+        print("Ожидание подключений...")
         
-        # Тест 1: Попытка решения без авторизации
-        print("1. SOLVE без авторизации:")
-        print(f"   Ответ: {self.send_command('SOLVE 1 2 1')}")
-        
-        # Тест 2: Авторизация
-        print("\n2. Авторизация (правильная):")
-        print(f"   Ответ: {self.send_command('LOGIN admin admin123')}")
-        
-        # Тест 3: Решение уравнения с коэффициентами
-        print("\n3. Решение x² - 5x + 6 = 0:")
-        print(f"   Ответ: {self.send_command('SOLVE 1 -5 6')}")
-        
-        # Тест 4: Сохранение коэффициентов
-        print("\n4. Сохранение коэффициентов:")
-        print(f"   Ответ: {self.send_command('STORE 1 0 -4')}")
-        
-        # Тест 5: Решение с сохраненными коэффициентами
-        print("\n5. Решение с сохраненными коэффициентами:")
-        print(f"   Ответ: {self.send_command('SOLVE')}")
-        
-        # Тест 6: Неправильная команда
-        print("\n6. Неправильная команда:")
-        print(f"   Ответ: {self.send_command('HELLO')}")
+        while True:
+            conn, addr = s.accept()
+            client_thread = threading.Thread(target=handle_client, args=(conn, addr))
+            client_thread.daemon = True
+            client_thread.start()
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        # Запуск тестового клиента
-        client = TestClient()
-        client.run_test()
-    else:
-        # Запуск сервера
-        server = QuadraticEquationServer()
-        server.start()
+    main()
