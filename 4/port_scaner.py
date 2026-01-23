@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Сканер портов с определением протоколов
-Запуск: sudo python3 port_scanner.py <ip_адрес>
+Запуск: sudo python3 port_scaner.py <ip_адрес>
 """
 
 import socket
@@ -101,6 +100,18 @@ KNOWN_PORTS = {
     50070: "Hadoop NameNode",
     61616: "ActiveMQ"
 }
+
+
+
+def save_results(ip, open_ports, filename="scan_results.txt"):
+    with open(filename, 'w') as f:
+        f.write(f"Результаты сканирования {ip}\n")
+        f.write(f"Время: {datetime.now()}\n")
+        f.write("-" * 50 + "\n")
+        for port, service, banner in open_ports:
+            f.write(f"Порт {port}: {service}\n")
+            if banner:
+                f.write(f"  Баннер: {banner[:200]}\n")
 
 def scan_port(ip, port, timeout=1):
     """Сканирование одного порта"""
