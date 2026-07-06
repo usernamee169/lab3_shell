@@ -1,19 +1,5 @@
 chmod +x server.py client.py
 ./server.py
-В другом терминале запустите клиент:
-./client.py # Или
-python3 client.py
 
-Тестовые команды в клиенте:
-> auth admin 123456
-> list
-> info server.py
-> retr server.py pass.txt
-> help
-> exit
-
-# Подключение через telnet
-telnet localhost 12345
-
-# Или через netcat
-nc localhost 12345
+В другом терминале запустить клиент:
+./client.py 
